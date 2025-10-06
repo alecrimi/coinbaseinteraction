@@ -1,73 +1,101 @@
-import os, time, hmac, hashlib, base64, json, requests, pandas as pd
-from datetime import datetime
+import os
+import time
+import json
+import hmac
+import hashlib
+import base64
+import requests
+import pandas as pd
 from dotenv import load_dotenv
 
-# === Load keys ===
+# === Load environment variables ===
 load_dotenv()
 API_KEY = os.getenv("COINBASE_API_KEY")
 API_SECRET = os.getenv("COINBASE_API_SECRET")
-if not (API_KEY and API_SECRET):
-    raise ValueError("❌ Missing API_KEY or API_SECRET in .env file")
 
-# === API endpoints ===
-API_URL = "https://api.coinbase.com/api/v3"
+if not all([API_KEY, API_SECRET]):
+    raise ValueError("❌ Missing Coinbase API keys in .env file!")
+
+# === Configuration ===
 PRODUCT_ID = "SOL-USD"
-
-# === Strategy parameters ===
 FAST_MA = 20
 SLOW_MA = 50
-TRADE_SIZE = "0.1"  # in SOL
-SLEEP_TIME = 60
+TRADE_SIZE = 0.1  # in SOL
+SLEEP_TIME = 60  # seconds
+PAPER_TRADING = True  # ← Change to False when you want to go LIVE
 
-# --- Sign requests ---
-def sign_request(method: str, path: str, body: dict | None = None):
+BASE_URL = "https://api.coinbase.com"  # For live trading
+# BASE_URL = "https://api.sandbox.coinbase.com"  # For sandbox testing
+
+# === Helper: sign Advanced Trade API requests ===
+def sign_request(method, request_path, body=""):
     timestamp = str(int(time.time()))
-    message = timestamp + method + path + (json.dumps(body) if body else "")
-    secret_decoded = base64.b64decode(API_SECRET)
-    signature = hmac.new(secret_decoded, message.encode(), hashlib.sha256)
-    signature_b64 = base64.b64encode(signature.digest()).decode()
-    headers = {
+    message = timestamp + method + request_path + body
+    hmac_key = base64.b64decode(API_SECRET)
+    signature = hmac.new(hmac_key, message.encode("utf-8"), hashlib.sha256)
+    signature_b64 = base64.b64encode(signature.digest()).decode("utf-8")
+    return {
         "CB-ACCESS-KEY": API_KEY,
         "CB-ACCESS-SIGN": signature_b64,
         "CB-ACCESS-TIMESTAMP": timestamp,
         "Content-Type": "application/json",
     }
-    return headers
 
-# --- Get recent candles (1 min) ---
-def get_candles():
-    url = f"{API_URL}/brokerage/products/{PRODUCT_ID}/candles?granularity=ONE_MINUTE"
-    r = requests.get(url, headers=sign_request("GET", f"/api/v3/brokerage/products/{PRODUCT_ID}/candles"))
-    data = r.json().get("candles", [])
+# === Get recent price candles ===
+def get_recent_data():
+    url = f"{BASE_URL}/api/v3/brokerage/products/{PRODUCT_ID}/candles?granularity=ONE_MINUTE"
+    r = requests.get(url)
+    if r.status_code != 200:
+        raise Exception(f"Error fetching data: {r.text}")
+    data = r.json()["candles"]
     df = pd.DataFrame(data)
+    df["time"] = pd.to_datetime(df["start"])
     df["close"] = df["close"].astype(float)
-    df = df.sort_values("start")
+    df = df.sort_values("time")
     return df
 
-# --- Place market order ---
-def place_order(side: str, size: str):
-    body = {
-        "client_order_id": str(int(time.time()*1000)),
+# === Place buy/sell order ===
+def place_order(side, size):
+    if PAPER_TRADING:
+        print(f"🧪 PAPER TRADE: Would place {side.upper()} order for {size} SOL")
+        return
+
+    url = f"{BASE_URL}/api/v3/brokerage/orders"
+    order = {
+        "client_order_id": str(int(time.time())),
         "product_id": PRODUCT_ID,
         "side": side,
-        "order_configuration": {"market_market_ioc": {"base_size": size}},
+        "order_configuration": {
+            "market_market_ioc": {
+                "base_size": str(size)
+            }
+        },
     }
-    path = "/api/v3/brokerage/orders"
-    headers = sign_request("POST", path, body)
-    resp = requests.post(API_URL + "/brokerage/orders", headers=headers, json=body)
-    print(f"{side.upper()} order →", resp.status_code, resp.text)
+    body = json.dumps(order)
+    headers = sign_request("POST", "/api/v3/brokerage/orders", body)
+    r = requests.post(url, headers=headers, data=body)
 
-# --- Main loop ---
+    if r.status_code == 200:
+        print(f"✅ {side.upper()} order placed:", r.json())
+    else:
+        print(f"⚠️ Order failed: {r.status_code} {r.text}")
+
+# === Main trading loop ===
 def run_bot():
-    position = "flat"
+    position = None  # "long" or "flat"
     while True:
         try:
-            df = get_candles()
+            df = get_recent_data()
             df["fast_ma"] = df["close"].rolling(FAST_MA).mean()
             df["slow_ma"] = df["close"].rolling(SLOW_MA).mean()
-            last_fast, last_slow, last_price = df.iloc[-1][["fast_ma","slow_ma","close"]]
-            print(f"{datetime.utcnow()} | Price ${last_price:.2f} | Fast {last_fast:.2f} | Slow {last_slow:.2f}")
 
+            last_fast = df["fast_ma"].iloc[-1]
+            last_slow = df["slow_ma"].iloc[-1]
+            last_price = df["close"].iloc[-1]
+
+            print(f"💰 Price: ${last_price:.2f} | Fast MA: {last_fast:.2f} | Slow MA: {last_slow:.2f}")
+
+            # === Strategy Logic ===
             if last_fast > last_slow and position != "long":
                 print("📈 Buy signal!")
                 place_order("BUY", TRADE_SIZE)
@@ -79,10 +107,11 @@ def run_bot():
                 position = "flat"
 
         except Exception as e:
-            print("⚠️ Error:", e)
+            print(f"⚠️ Error: {e}")
 
         time.sleep(SLEEP_TIME)
 
+# === Entry point ===
 if __name__ == "__main__":
-    print("🚀 Starting Momentum Bot (Advanced Trade API)…")
+    print("🚀 Starting Momentum Bot for SOL-USD on Coinbase Advanced Trade API...")
     run_bot()
