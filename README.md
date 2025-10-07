@@ -10,4 +10,4 @@ COINBASE_API_SECRET=your_api_secret_here
 
 install requirements:
 
-pip install requests python-dotenv pandas cbpro
+pip install requests urllib3 pandas python-dotenv
