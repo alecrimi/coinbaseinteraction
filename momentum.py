@@ -43,11 +43,14 @@ def sign_request(method, request_path, body=""):
 
 # === Get recent price candles ===
 def get_recent_data():
-    url = f"{BASE_URL}/api/v3/brokerage/products/{PRODUCT_ID}/candles?granularity=ONE_MINUTE"
+    # Use public endpoint (no API key needed)
+    url = f"https://api.coinbase.com/api/v3/brokerage/products/{PRODUCT_ID}/candles?granularity=ONE_MINUTE"
     r = requests.get(url)
     if r.status_code != 200:
         raise Exception(f"Error fetching data: {r.text}")
-    data = r.json()["candles"]
+    data = r.json().get("candles", [])
+    if not data:
+        raise Exception("No candle data received")
     df = pd.DataFrame(data)
     df["time"] = pd.to_datetime(df["start"])
     df["close"] = df["close"].astype(float)
